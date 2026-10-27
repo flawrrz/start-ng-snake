@@ -664,21 +664,25 @@ class PageSnake {
   bodyOutlinePoints() {
     const points = [];
     const trail = this.trail;
-    let accumulated = 0;
+    const step = Math.max(8, this.grid ? this.grid.cell * 0.5 : 12);
+    const reach = this.bodyLength + step;
+    let sincePoint = 0;
+    let total = 0;
     for (let i = trail.length - 1; i >= 0; i -= 1) {
       const point = trail[i];
       if (i === trail.length - 1) {
         points.push(point);
-        accumulated = 0;
         continue;
       }
       const previous = trail[i + 1];
-      accumulated += hypot(point.x - previous.x, point.y - previous.y);
-      if (accumulated >= 14) {
+      const segment = hypot(point.x - previous.x, point.y - previous.y);
+      sincePoint += segment;
+      total += segment;
+      if (sincePoint >= step) {
         points.push(point);
-        accumulated = 0;
+        sincePoint = 0;
       }
-      if (points.length > 80) break;
+      if (total >= reach) break;
     }
     return points;
   }
