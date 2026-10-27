@@ -59,6 +59,13 @@ function hypot(x, y) {
   return Math.sqrt(x * x + y * y);
 }
 
+function angleDelta(a, b) {
+  let difference = a - b;
+  while (difference > Math.PI) difference -= TAU;
+  while (difference < -Math.PI) difference += TAU;
+  return difference;
+}
+
 class MinHeap {
   constructor() {
     this.ids = [];
@@ -134,13 +141,21 @@ class PageSnake {
     this.phase = 0;
     this.bodyLength = 0;
     this.apple = null;
+    this.lastApple = null;
     this.particles = [];
-    this.alpha = 1;
-    this.occluded = false;
+    this.coveredSince = 0;
+    this.nextResurfaceAt = 0;
+    this.lastWanderAngle = null;
+    this.wanderAvoid = null;
+    this.maskCanvas = document.createElement("canvas");
+    this.maskCtx = this.maskCanvas.getContext("2d");
+    this.maskShapes = [];
+    this.maskDirty = true;
+    this.maskCacheDirty = true;
+    this.maskScrollX = NaN;
+    this.maskScrollY = NaN;
     this.layoutDirty = true;
     this.lastGridAt = -Infinity;
-    this.lastScrollAt = -Infinity;
-    this.lastRecoverAt = -Infinity;
     this.nextInitAt = 0;
     this.nextAppleAt = 0;
     this.nextWanderAt = 0;
@@ -150,17 +165,17 @@ class PageSnake {
     this.reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     this.boundTick = (time) => this.tick(time);
     this.boundScroll = () => {
-      this.lastScrollAt = performance.now();
       this.layoutDirty = true;
     };
     this.boundResize = () => {
-      this.lastScrollAt = performance.now();
       this.measure();
       this.layoutDirty = true;
+      this.maskCacheDirty = true;
     };
     this.boundToggle = (event) => {
       if (event.target instanceof HTMLDetailsElement) {
         this.layoutDirty = true;
+        this.maskCacheDirty = true;
       }
     };
     this.boundVisibility = () => {
@@ -175,6 +190,7 @@ class PageSnake {
     if (document.fonts?.ready) {
       document.fonts.ready.then(() => {
         this.layoutDirty = true;
+        this.maskCacheDirty = true;
       }).catch(() => {});
     }
   }
@@ -204,8 +220,8 @@ class PageSnake {
   }
 
   measure() {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+    const width = this.canvas.clientWidth || window.innerWidth;
+    const height = this.canvas.clientHeight || window.innerHeight;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     if (width === this.w && height === this.h && dpr === this.dpr) return false;
 
@@ -219,6 +235,9 @@ class PageSnake {
     if (this.canvas.width !== pixelWidth) this.canvas.width = pixelWidth;
     if (this.canvas.height !== pixelHeight) this.canvas.height = pixelHeight;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.ctx.imageSmoothingEnabled = true;
+    this.ctx.imageSmoothingQuality = "high";
+    this.maskDirty = true;
     return true;
   }
 
@@ -257,6 +276,7 @@ class PageSnake {
     this.grid = { cell, cols, rows, blocked };
     this.layoutDirty = false;
     this.lastGridAt = now;
+    if (this.maskCacheDirty) this.rebuildMaskCache();
     this.afterLayout(now);
   }
 
@@ -267,55 +287,61 @@ class PageSnake {
       return;
     }
 
-    if (!this.headIsFree() || !this.bodyIsFree()) {
-      this.occluded = true;
+    const margin = this.grid.cell * 0.5;
+    const x = clamp(this.head.x, margin, Math.max(margin, this.w - margin));
+    const y = clamp(this.head.y, margin, Math.max(margin, this.h - margin));
+    if (x !== this.head.x || y !== this.head.y) {
+      this.head.x = x;
+      this.head.y = y;
       this.path = [];
-      return;
-    }
-
-    if (this.occluded) return;
-
-    if (this.apple && !this.pointIsFree(this.apple.x, this.apple.y)) {
-      this.apple = null;
-      this.nextAppleAt = now + 160;
     }
 
     if (this.path.length && !this.pathIsClear()) {
       this.path = [];
-      if (this.apple) this.planToApple(now);
+      if (this.appleReachable()) this.planToApple(now);
     }
   }
 
   update(dt, now) {
     if (!this.head) {
-      this.alpha = 0;
       if (now >= this.nextInitAt) this.initWorld(now);
       this.updateParticles(dt);
       return;
     }
 
-    const quiet = now - this.lastScrollAt > 220 && now - this.lastGridAt > 90;
-    if (this.occluded && quiet && now - this.lastRecoverAt > 450) {
-      if (this.headIsFree() && this.bodyIsFree()) {
-        this.occluded = false;
-        this.lastRecoverAt = now;
-        if (this.apple && !this.pointIsFree(this.apple.x, this.apple.y)) {
-          this.apple = null;
-          this.nextAppleAt = now + 180;
-        }
-      } else {
-        this.relocate(now);
+    this.updateParticles(dt);
+
+    if (this.pointIsVisible(this.head.x, this.head.y)) {
+      this.coveredSince = 0;
+    } else if (!this.coveredSince) {
+      this.coveredSince = now;
+    }
+
+    if (this.coveredSince) {
+      const hiddenFor = now - this.coveredSince;
+      const grace = this.chasingApple() ? 4200 : 2200;
+      const limit = grace * (this.reducedMotion.matches ? 0.6 : 1);
+      if (hiddenFor > limit && now >= this.nextResurfaceAt && !this.pathReachesFreeWithin(1.1)) {
+        this.resurface(now);
       }
     }
 
-    const alphaTarget = this.occluded ? 0 : 1;
-    this.alpha += (alphaTarget - this.alpha) * Math.min(1, dt * 14);
-    if (this.alpha < 0.01) this.alpha = 0;
-    if (this.alpha > 0.99) this.alpha = 1;
-
-    this.updateParticles(dt);
-
-    if (this.occluded) return;
+    if (this.apple) {
+      if (!this.apple.leaving && !this.pointIsFree(this.apple.x, this.apple.y)) {
+        this.apple.leaving = true;
+        const end = this.path[this.path.length - 1];
+        if (end && hypot(end.x - this.apple.x, end.y - this.apple.y) < this.grid.cell * 1.5) {
+          this.path = [];
+        }
+      }
+      if (this.apple.leaving) {
+        this.apple.alpha -= dt * 4.5;
+        if (this.apple.alpha <= 0.01) {
+          this.apple = null;
+          this.nextAppleAt = now + 360;
+        }
+      }
+    }
 
     if (!this.apple && now >= this.nextAppleAt) {
       if (!this.spawnApple(now)) {
@@ -324,7 +350,7 @@ class PageSnake {
     }
 
     if (!this.path.length) {
-      if (this.apple) {
+      if (this.appleReachable()) {
         this.planToApple(now);
       }
       if (!this.path.length) {
@@ -341,57 +367,55 @@ class PageSnake {
 
   initWorld(now) {
     if (!this.bodyLength) this.bodyLength = this.cfg.initialLength;
-    if (!this.placeSnake(now)) {
+    if (!this.placeSnake()) {
       this.nextInitAt = now + 650;
       return;
     }
 
-    this.occluded = false;
-    this.alpha = 1;
     this.apple = null;
+    this.lastApple = null;
     this.nextAppleAt = now;
-    this.lastRecoverAt = now;
+    this.nextWanderAt = 0;
+    this.coveredSince = 0;
+    this.nextResurfaceAt = 0;
+    this.lastWanderAngle = null;
+    this.wanderAvoid = null;
     this.spawnApple(now);
-  }
-
-  relocate(now) {
-    this.lastRecoverAt = now;
-    if (!this.placeSnake(now)) {
-      this.occluded = true;
-      return;
-    }
-
-    this.occluded = false;
-    this.alpha = 0;
-    this.apple = null;
-    this.nextAppleAt = now + 220;
-    this.particles = [];
   }
 
   placeSnake() {
     if (!this.grid) return false;
-    const candidates = this.spawnCandidates().slice(0, 24);
+    const attempts = [
+      { allow: (c, r) => this.isFreeCell(c, r), candidates: this.spawnCandidates() },
+      { allow: (c, r) => this.isRoamCell(c, r), candidates: this.spawnCandidates(true) },
+    ];
 
-    for (const candidate of candidates) {
-      const chain = this.bodyChain(candidate.c, candidate.r);
-      if (!chain || chain.length < 3) continue;
+    for (const attempt of attempts) {
+      const candidates = attempt.candidates.slice(0, 28);
+      for (const candidate of candidates) {
+        if (!attempt.allow(candidate.c, candidate.r)) continue;
+        const chain = this.bodyChain(candidate.c, candidate.r, attempt.allow);
+        if (!chain || chain.length < 3) continue;
 
-      const smoothed = this.smoothChain(chain);
-      const head = smoothed[0];
-      const neck = smoothed[1] ?? chain[1];
-      this.head = { x: head.x, y: head.y };
-      this.trail = smoothed.slice().reverse();
-      this.angle = Math.atan2(head.y - neck.y, head.x - neck.x);
-      this.visualAngle = this.angle;
-      this.path = [];
-      this.phase = Math.random() * TAU;
-      return true;
+        const smoothed = this.smoothChain(chain, attempt.allow);
+        const head = smoothed[0];
+        const neck = smoothed[1] ?? chain[1];
+        this.head = { x: head.x, y: head.y };
+        this.trail = smoothed.slice().reverse();
+        this.angle = Math.atan2(head.y - neck.y, head.x - neck.x);
+        this.visualAngle = this.angle;
+        this.path = [];
+        this.phase = Math.random() * TAU;
+        this.coveredSince = 0;
+        this.lastWanderAngle = null;
+        return true;
+      }
     }
 
     return false;
   }
 
-  spawnCandidates() {
+  spawnCandidates(includeBlocked = false) {
     const { cols, rows, blocked, cell } = this.grid;
     const preferred = this.head
       ? { x: this.head.x, y: this.head.y }
@@ -400,17 +424,21 @@ class PageSnake {
 
     for (let r = 1; r < rows - 1; r += 1) {
       for (let c = 1; c < cols - 1; c += 1) {
-        if (blocked[r * cols + c]) continue;
+        const isBlocked = blocked[r * cols + c] === 1;
+        if (isBlocked && !includeBlocked) continue;
         const x = (c + 0.5) * cell;
         const y = (r + 0.5) * cell;
         if (x < cell * 1.5 || x > this.w - cell * 1.5) continue;
         if (y < cell * 1.5 || y > this.h - cell * 1.5) continue;
 
-        let tier = 0;
-        if (this.isOpen(c, r, 2)) tier = 3;
-        else if (this.isOpen(c, r, 1)) tier = 2;
-        else if (this.freeNeighbours(c, r) >= 2) tier = 1;
-        if (!tier) continue;
+        let tier = 1;
+        if (!isBlocked) {
+          tier = 0;
+          if (this.isOpen(c, r, 2)) tier = 3;
+          else if (this.isOpen(c, r, 1)) tier = 2;
+          else if (this.freeNeighbours(c, r) >= 2) tier = 1;
+          if (!tier) continue;
+        }
 
         const distance = hypot(x - preferred.x, y - preferred.y);
         const score =
@@ -427,11 +455,11 @@ class PageSnake {
     return list;
   }
 
-  bodyChain(startC, startR) {
-    const { cols, rows, blocked } = this.grid;
+  bodyChain(startC, startR, allow) {
+    const { cols, rows } = this.grid;
     const total = cols * rows;
     const start = startR * cols + startC;
-    if (blocked[start]) return null;
+    if (!allow(startC, startR)) return null;
 
     const parent = new Int32Array(total).fill(-1);
     const depth = new Uint16Array(total);
@@ -468,9 +496,9 @@ class PageSnake {
         [c, r - 1],
       ];
       for (const [nc, nr] of neighbours) {
-        if (nc < 0 || nr < 0 || nc >= cols || nr >= rows) continue;
+        if (!allow(nc, nr)) continue;
         const nid = nr * cols + nc;
-        if (blocked[nid] || parent[nid] !== -1) continue;
+        if (parent[nid] !== -1) continue;
         parent[nid] = id;
         depth[nid] = d + 1;
         queue[tail] = nid;
@@ -503,7 +531,7 @@ class PageSnake {
     });
   }
 
-  smoothChain(points) {
+  smoothChain(points, allow) {
     if (points.length < 3) return points.slice();
     let result = points.map((point) => ({ ...point }));
 
@@ -522,7 +550,8 @@ class PageSnake {
     }
 
     for (const point of result) {
-      if (!this.pointIsFree(point.x, point.y)) return points.slice();
+      const cell = this.cellAt(point.x, point.y);
+      if (!cell || !allow(cell.c, cell.r)) return points.slice();
     }
     return result;
   }
@@ -564,30 +593,15 @@ class PageSnake {
 
   planWander(now) {
     if (now < this.nextWanderAt || !this.head) return false;
-    this.nextWanderAt = now + 300;
+    this.nextWanderAt = now + 280;
 
     const start = this.cellAt(this.head.x, this.head.y);
     if (!start) return false;
-    const reachable = this.reachableFrom(start.c, start.r);
-    if (!reachable.length) return false;
 
-    const cell = this.grid.cell;
-    const options = [];
-    const fallbackOptions = [];
-    for (const id of reachable) {
-      const c = id % this.grid.cols;
-      const r = (id / this.grid.cols) | 0;
-      const x = (c + 0.5) * cell;
-      const y = (r + 0.5) * cell;
-      const distance = hypot(x - this.head.x, y - this.head.y);
-      if (distance < cell * 4 || distance > cell * 14) continue;
-      if (this.isOpen(c, r, 1)) options.push({ c, r });
-      else fallbackOptions.push({ c, r });
-    }
+    const hiddenFor = this.coveredSince ? now - this.coveredSince : 0;
+    const target = this.pickWanderTarget(hiddenFor > 1600);
+    if (!target) return false;
 
-    const pool = options.length ? options : fallbackOptions;
-    if (!pool.length) return false;
-    const target = pool[Math.floor(Math.random() * pool.length)];
     const cells = this.findCellPath(start.c, start.r, target.c, target.r);
     if (!cells || !cells.length) return false;
 
@@ -595,54 +609,206 @@ class PageSnake {
       const c = id % this.grid.cols;
       const r = (id / this.grid.cols) | 0;
       return {
+        x: (c + 0.5) * this.grid.cell,
+        y: (r + 0.5) * this.grid.cell,
+      };
+    });
+    this.path = this.smoothPath(points);
+    if (!this.path.length) return false;
+
+    this.lastWanderAngle = Math.atan2(
+      (target.r + 0.5) * this.grid.cell - this.head.y,
+      (target.c + 0.5) * this.grid.cell - this.head.x,
+    );
+    this.wanderAvoid = null;
+    return true;
+  }
+
+  /* Briefly target the closest open background so the head breaks cover. */
+  resurface(now) {
+    this.nextResurfaceAt = now + 1200;
+    if (!this.grid || !this.head) return false;
+    const start = this.cellAt(this.head.x, this.head.y);
+    if (!start) return false;
+
+    const { cols, rows, cell } = this.grid;
+    const body = this.bodyCostMap();
+    let target = null;
+    let bestScore = Infinity;
+
+    for (let r = 1; r < rows - 1; r += 1) {
+      for (let c = 1; c < cols - 1; c += 1) {
+        if (body[r * cols + c]) continue;
+        const x = (c + 0.5) * cell;
+        const y = (r + 0.5) * cell;
+        if (!this.pointIsVisible(x, y)) continue;
+        const edge = Math.min(x, y, this.w - x, this.h - y);
+        const score =
+          hypot(x - this.head.x, y - this.head.y) +
+          (this.isOpen(c, r, 1) ? 0 : cell) +
+          Math.max(0, cell * 3 - edge) * 1.5;
+        if (score < bestScore) {
+          bestScore = score;
+          target = { c, r };
+        }
+      }
+    }
+
+    if (!target) return false;
+    if (target.c === start.c && target.r === start.r) return false;
+
+    const cells = this.findCellPath(start.c, start.r, target.c, target.r);
+    if (!cells || !cells.length) return false;
+
+    const points = cells.map((id) => {
+      const c = id % cols;
+      const r = (id / cols) | 0;
+      return {
         x: (c + 0.5) * cell,
         y: (r + 0.5) * cell,
       };
     });
     this.path = this.smoothPath(points);
-    return this.path.length > 0;
+    if (!this.path.length) return false;
+
+    const speed = this.cfg.speed * (this.reducedMotion.matches ? 0.5 : 1);
+    const travel = this.remainingPathLength() / Math.max(1, speed);
+    this.nextResurfaceAt = now + clamp(travel * 1000 + 600, 1500, 12000);
+    this.nextWanderAt = now + 280;
+    this.lastWanderAngle = null;
+    return true;
+  }
+
+  remainingPathLength() {
+    let total = 0;
+    let x = this.head.x;
+    let y = this.head.y;
+    for (const point of this.path) {
+      total += hypot(point.x - x, point.y - y);
+      x = point.x;
+      y = point.y;
+    }
+    return total;
+  }
+
+  pathReachesFreeWithin(seconds) {
+    if (!this.path.length) return false;
+    const end = this.path[this.path.length - 1];
+    if (!this.pointIsVisible(end.x, end.y)) return false;
+    const speed = this.cfg.speed * (this.reducedMotion.matches ? 0.5 : 1);
+    return this.remainingPathLength() <= speed * seconds;
+  }
+
+  pickWanderTarget(freeOnly) {
+    const { cols, rows, cell } = this.grid;
+    const diag = hypot(this.w, this.h);
+    const minDistance = Math.max(cell * 6, diag * 0.22);
+    const maxDistance = Math.min(620, Math.max(minDistance + cell * 8, diag * 0.52));
+    const margin = 2;
+    const wantHidden = !freeOnly && Math.random() < 0.25;
+    let best = null;
+    let bestScore = 0;
+
+    const sample = (hidden) => {
+      for (let i = 0; i < 70; i += 1) {
+        const spanC = Math.max(1, cols - margin * 2);
+        const spanR = Math.max(1, rows - margin * 2);
+        const c = margin + Math.floor(Math.random() * spanC);
+        const r = margin + Math.floor(Math.random() * spanR);
+        if (c >= cols - margin || r >= rows - margin) continue;
+
+        const x = (c + 0.5) * cell;
+        const y = (r + 0.5) * cell;
+        if (this.pointIsVisible(x, y) === hidden) continue;
+
+        const distance = hypot(x - this.head.x, y - this.head.y);
+        if (distance < minDistance || distance > maxDistance) continue;
+
+        const edge = Math.min(x, y, this.w - x, this.h - y);
+        let score =
+          0.55 +
+          0.45 * clamp((distance - minDistance) / Math.max(1, maxDistance - minDistance), 0, 1);
+        score *= 0.6 + 0.4 * clamp((edge - cell * 2) / (cell * 6), 0, 1);
+
+        if (this.lastWanderAngle !== null) {
+          const angle = Math.atan2(y - this.head.y, x - this.head.x);
+          if (Math.abs(angleDelta(angle, this.lastWanderAngle)) < Math.PI / 2) score *= 0.4;
+        }
+
+        if (this.wanderAvoid) {
+          const away = hypot(x - this.wanderAvoid.x, y - this.wanderAvoid.y);
+          if (away < diag * 0.3) score *= 0.2;
+        }
+
+        score *= 0.7 + Math.random() * 0.6;
+        if (score > bestScore) {
+          bestScore = score;
+          best = { c, r };
+        }
+      }
+    };
+
+    sample(wantHidden);
+    if (!best) sample(!wantHidden);
+    if (best) return best;
+
+    for (let i = 0; i < 120; i += 1) {
+      const c = 1 + Math.floor(Math.random() * Math.max(1, cols - 2));
+      const r = 1 + Math.floor(Math.random() * Math.max(1, rows - 2));
+      if (c >= cols - 1 || r >= rows - 1) continue;
+      const x = (c + 0.5) * cell;
+      const y = (r + 0.5) * cell;
+      if (freeOnly && !this.pointIsVisible(x, y)) continue;
+      if (hypot(x - this.head.x, y - this.head.y) < cell * 4) continue;
+      return { c, r };
+    }
+
+    return null;
   }
 
   spawnApple(now) {
     if (!this.head) return false;
-    const start = this.cellAt(this.head.x, this.head.y);
-    if (!start) return false;
-
-    const reachable = this.reachableFrom(start.c, start.r);
-    if (!reachable.length) return false;
-
-    const cell = this.grid.cell;
+    const { cell, cols, rows, blocked } = this.grid;
     const margin = this.cfg.appleRadius + 6;
     const minDistance = Math.max(cell * 5, Math.min(140, this.w * 0.2));
     const idealDistance = Math.min(450, Math.max(165, this.w * 0.32));
     const bodyPoints = this.bodyOutlinePoints();
+    const lastApple = this.lastApple;
 
     const collect = (allowClose) => {
       const withSpace = [];
       const withoutSpace = [];
-      for (const id of reachable) {
-        const c = id % this.grid.cols;
-        const r = (id / this.grid.cols) | 0;
-        const x = (c + 0.5) * cell;
-        const y = (r + 0.5) * cell;
-        if (x < margin || x > this.w - margin) continue;
-        if (y < margin || y > this.h - margin) continue;
+      for (let r = 1; r < rows - 1; r += 1) {
+        for (let c = 1; c < cols - 1; c += 1) {
+          if (blocked[r * cols + c]) continue;
+          const x = (c + 0.5) * cell;
+          const y = (r + 0.5) * cell;
+          if (x < margin || x > this.w - margin) continue;
+          if (y < margin || y > this.h - margin) continue;
 
-        const distance = hypot(x - this.head.x, y - this.head.y);
-        if (distance < minDistance && !allowClose) continue;
+          const distance = hypot(x - this.head.x, y - this.head.y);
+          if (distance < minDistance && !allowClose) continue;
 
-        let nearBody = false;
-        for (const point of bodyPoints) {
-          if (hypot(x - point.x, y - point.y) < this.cfg.bodyWidth + this.cfg.appleRadius + 10) {
-            nearBody = true;
-            break;
+          let nearBody = false;
+          for (const point of bodyPoints) {
+            if (hypot(x - point.x, y - point.y) < this.cfg.bodyWidth + this.cfg.appleRadius + 10) {
+              nearBody = true;
+              break;
+            }
           }
-        }
-        if (nearBody) continue;
+          if (nearBody) continue;
 
-        const entry = { x, y, distance };
-        if (this.isOpen(c, r, 1)) withSpace.push(entry);
-        else withoutSpace.push(entry);
+          const edge = Math.min(x, y, this.w - x, this.h - y);
+          let score = Math.abs(distance - idealDistance) * 0.4;
+          score += Math.max(0, cell * 7 - edge) * 2.4;
+          if (lastApple && hypot(x - lastApple.x, y - lastApple.y) < Math.max(this.w, this.h) * 0.3) {
+            score += 110;
+          }
+
+          const entry = { x, y, distance, score };
+          if (this.isOpen(c, r, 1)) withSpace.push(entry);
+          else withoutSpace.push(entry);
+        }
       }
       return withSpace.length ? withSpace : withoutSpace;
     };
@@ -651,13 +817,20 @@ class PageSnake {
     if (!candidates.length) candidates = collect(true);
     if (!candidates.length) return false;
 
-    candidates.sort((a, b) => Math.abs(a.distance - idealDistance) - Math.abs(b.distance - idealDistance));
+    candidates.sort((a, b) => a.score - b.score);
     const poolSize = Math.max(3, Math.ceil(candidates.length * 0.3));
     const pool = candidates.slice(0, poolSize);
     const chosen = pool[Math.floor(Math.random() * pool.length)];
 
-    this.apple = { x: chosen.x, y: chosen.y, born: now, seed: Math.random() * 10 };
-    this.planToApple(now);
+    this.apple = {
+      x: chosen.x,
+      y: chosen.y,
+      born: now,
+      seed: Math.random() * 10,
+      alpha: 1,
+      leaving: false,
+    };
+    this.lastApple = { x: chosen.x, y: chosen.y };
     return true;
   }
 
@@ -689,7 +862,7 @@ class PageSnake {
 
   move(dt) {
     const previous = { x: this.head.x, y: this.head.y };
-    const speed = this.cfg.speed * (this.reducedMotion.matches ? 0.38 : 1);
+    const speed = this.cfg.speed * (this.reducedMotion.matches ? 0.5 : 1);
     let remaining = speed * dt;
     let travel = 0;
     let moveAngle = this.angle;
@@ -753,14 +926,16 @@ class PageSnake {
   }
 
   checkEat(now) {
-    if (!this.apple) return;
+    if (!this.apple || this.apple.leaving || this.apple.alpha < 0.6) return;
     const reach = this.cfg.appleRadius + this.cfg.bodyWidth * 0.45;
     if (hypot(this.head.x - this.apple.x, this.head.y - this.apple.y) > reach) return;
 
     this.burst(this.apple.x, this.apple.y);
     this.bodyLength += this.cfg.growth;
+    this.wanderAvoid = { x: this.apple.x, y: this.apple.y };
     this.apple = null;
     this.nextAppleAt = now + 520;
+    this.nextWanderAt = 0;
     this.path = [];
     this.planWander(now);
   }
@@ -820,6 +995,11 @@ class PageSnake {
     return this.grid.blocked[r * this.grid.cols + c] === 0;
   }
 
+  isRoamCell(c, r) {
+    if (!this.grid) return false;
+    return c >= 0 && r >= 0 && c < this.grid.cols && r < this.grid.rows;
+  }
+
   isOpen(c, r, radius) {
     for (let dr = -radius; dr <= radius; dr += 1) {
       for (let dc = -radius; dc <= radius; dc += 1) {
@@ -843,71 +1023,32 @@ class PageSnake {
     return !!cell && this.isFreeCell(cell.c, cell.r);
   }
 
-  headIsFree() {
-    return !!this.head && this.pointIsFree(this.head.x, this.head.y);
-  }
-
-  bodyIsFree() {
-    if (!this.head) return false;
-    for (const point of this.bodyOutlinePoints()) {
-      if (!this.pointIsFree(point.x, point.y)) return false;
+  pointIsVisible(x, y) {
+    if (x < 0 || y < 0 || x >= this.w || y >= this.h) return false;
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+    for (const shape of this.maskShapes) {
+      const left = shape.fixed ? shape.x : shape.x - scrollX;
+      const top = shape.fixed ? shape.y : shape.y - scrollY;
+      if (x >= left && x <= left + shape.w && y >= top && y <= top + shape.h) return false;
     }
     return true;
   }
 
-  reachableFrom(startC, startR) {
-    const { cols, rows, blocked } = this.grid;
-    if (!this.isFreeCell(startC, startR)) return [];
-    const seen = new Uint8Array(cols * rows);
-    const queue = new Int32Array(cols * rows);
-    const start = startR * cols + startC;
-    let head = 0;
-    let tail = 0;
-    queue[tail] = start;
-    tail += 1;
-    seen[start] = 1;
-    const cells = [];
+  pointIsRoamable(x, y) {
+    return x >= 0 && y >= 0 && x < this.w && y < this.h;
+  }
 
-    while (head < tail) {
-      const id = queue[head];
-      head += 1;
-      cells.push(id);
-      const c = id % cols;
-      const r = (id / cols) | 0;
-      if (c + 1 < cols) {
-        const n = id + 1;
-        if (!blocked[n] && !seen[n]) {
-          seen[n] = 1;
-          queue[tail] = n;
-          tail += 1;
-        }
-      }
-      if (c > 0) {
-        const n = id - 1;
-        if (!blocked[n] && !seen[n]) {
-          seen[n] = 1;
-          queue[tail] = n;
-          tail += 1;
-        }
-      }
-      if (r + 1 < rows) {
-        const n = id + cols;
-        if (!blocked[n] && !seen[n]) {
-          seen[n] = 1;
-          queue[tail] = n;
-          tail += 1;
-        }
-      }
-      if (r > 0) {
-        const n = id - cols;
-        if (!blocked[n] && !seen[n]) {
-          seen[n] = 1;
-          queue[tail] = n;
-          tail += 1;
-        }
-      }
-    }
-    return cells;
+  appleReachable() {
+    if (!this.apple || this.apple.leaving || !this.head) return false;
+    const radius = Math.min(640, Math.hypot(this.w, this.h) * 0.42);
+    return hypot(this.apple.x - this.head.x, this.apple.y - this.head.y) <= radius;
+  }
+
+  chasingApple() {
+    if (!this.apple || this.apple.leaving || !this.path.length || !this.grid) return false;
+    const end = this.path[this.path.length - 1];
+    return hypot(end.x - this.apple.x, end.y - this.apple.y) < this.grid.cell;
   }
 
   heuristic(c, r, goalC, goalR) {
@@ -917,8 +1058,8 @@ class PageSnake {
   }
 
   findCellPath(startC, startR, goalC, goalR) {
-    if (!this.isFreeCell(startC, startR) || !this.isFreeCell(goalC, goalR)) return null;
-    const { cols, rows, blocked } = this.grid;
+    if (!this.isRoamCell(startC, startR) || !this.isRoamCell(goalC, goalR)) return null;
+    const { cols, rows } = this.grid;
     const total = cols * rows;
     const start = startR * cols + startC;
     const goal = goalR * cols + goalC;
@@ -955,15 +1096,17 @@ class PageSnake {
       for (const [dc, dr] of DIRECTIONS) {
         const nc = c + dc;
         const nr = r + dr;
-        if (!this.isFreeCell(nc, nr)) continue;
+        if (!this.isRoamCell(nc, nr)) continue;
         if (dc !== 0 && dr !== 0) {
-          if (!this.isFreeCell(c + dc, r) || !this.isFreeCell(c, r + dr)) continue;
+          if (!this.isRoamCell(c + dc, r) || !this.isRoamCell(c, r + dr)) continue;
         }
         const nid = nr * cols + nc;
         if (closed[nid]) continue;
 
         const step = dc !== 0 && dr !== 0 ? Math.SQRT2 : 1;
-        const penalty = bodyCost[nid] ? 1.1 : 0;
+        const edge = Math.min(nc, nr, cols - 1 - nc, rows - 1 - nr);
+        const penalty =
+          (bodyCost[nid] ? 1.1 : 0) + (edge === 0 ? 1.5 : edge === 1 ? 0.3 : 0);
         const tentative = gScore[current] + step + penalty;
         if (tentative >= gScore[nid]) continue;
 
@@ -1030,7 +1173,7 @@ class PageSnake {
     const steps = Math.max(1, Math.ceil(distance / (this.grid.cell * 0.35)));
     for (let i = 0; i <= steps; i += 1) {
       const t = i / steps;
-      if (!this.pointIsFree(a.x + dx * t, a.y + dy * t)) return false;
+      if (!this.pointIsRoamable(a.x + dx * t, a.y + dy * t)) return false;
     }
     return true;
   }
@@ -1106,22 +1249,166 @@ class PageSnake {
     return points;
   }
 
-  render(now) {
+  rebuildMaskCache() {
+    this.maskCacheDirty = false;
+    this.maskDirty = true;
+    const shapes = [];
+    const range = document.createRange();
+
+    for (const region of document.querySelectorAll("[data-snake-mask]")) {
+      const fixed = this.isFixedRegion(region);
+
+      const walk = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          if (node.nodeValue && node.nodeValue.trim()) {
+            range.selectNodeContents(node);
+            for (const rect of range.getClientRects()) {
+              this.pushMaskRect(shapes, rect, 0, fixed);
+            }
+          }
+          return;
+        }
+        if (!(node instanceof Element)) return;
+        if (node.tagName === "SCRIPT" || node.tagName === "STYLE" || node.tagName === "NOSCRIPT") return;
+
+        const style = getComputedStyle(node);
+        if (style.display === "none" || style.visibility === "hidden") return;
+
+        if (this.paintsSurface(style, node)) {
+          const radius = parseFloat(style.borderTopLeftRadius) || 0;
+          for (const rect of node.getClientRects()) {
+            this.pushMaskRect(shapes, rect, radius, fixed);
+          }
+        }
+
+        for (const child of node.childNodes) walk(child);
+      };
+
+      walk(region);
+    }
+
+    this.maskShapes = shapes;
+  }
+
+  isFixedRegion(element) {
+    let node = element;
+    while (node && node !== document.documentElement) {
+      const position = getComputedStyle(node).position;
+      if (position === "fixed" || position === "sticky") return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  paintsSurface(style, element) {
+    if (style.backgroundImage && style.backgroundImage !== "none") return true;
+
+    const background = style.backgroundColor;
+    if (background && background !== "transparent") {
+      const match = background.match(/^rgba?\(([^)]+)\)$/);
+      if (!match) return true;
+      const parts = match[1].split(",");
+      const alpha = parts.length > 3 ? parseFloat(parts[3]) : 1;
+      if (alpha > 0.04) return true;
+    }
+
+    const tag = element.tagName;
+    return tag === "IMG" || tag === "SVG" || tag === "VIDEO" || tag === "CANVAS";
+  }
+
+  pushMaskRect(shapes, rect, radius, fixed) {
+    if (rect.width < 1 || rect.height < 1) return;
+    shapes.push({
+      x: rect.left + (fixed ? 0 : window.scrollX),
+      y: rect.top + (fixed ? 0 : window.scrollY),
+      w: rect.width,
+      h: rect.height,
+      r: radius,
+      fixed,
+    });
+  }
+
+  syncMask() {
+    if (!this.maskCtx) return;
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+    if (!this.maskDirty && scrollX === this.maskScrollX && scrollY === this.maskScrollY) return;
+    this.buildMask(scrollX, scrollY);
+  }
+
+  buildMask(scrollX, scrollY) {
+    const ctx = this.maskCtx;
+    const scale = 0.42;
+    const width = Math.max(1, Math.round(this.w * scale));
+    const height = Math.max(1, Math.round(this.h * scale));
+
+    if (this.maskCanvas.width !== width || this.maskCanvas.height !== height) {
+      this.maskCanvas.width = width;
+      this.maskCanvas.height = height;
+    }
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.fillStyle = "#000";
+
+    for (const shape of this.maskShapes) {
+      const x = shape.fixed ? shape.x : shape.x - scrollX;
+      const y = shape.fixed ? shape.y : shape.y - scrollY;
+      if (x > this.w || y > this.h || x + shape.w < 0 || y + shape.h < 0) continue;
+      this.traceMaskRect(ctx, x - 0.6, y - 0.8, shape.w + 1.2, shape.h + 1.6, shape.r);
+      ctx.fill();
+    }
+
+    this.maskScrollX = scrollX;
+    this.maskScrollY = scrollY;
+    this.maskDirty = false;
+  }
+
+  traceMaskRect(ctx, x, y, width, height, radius) {
+    const r = Math.min(Math.max(0, radius), width / 2, height / 2);
+    ctx.beginPath();
+    if (r < 0.5) {
+      ctx.rect(x, y, width, height);
+      return;
+    }
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + width - r, y);
+    ctx.arcTo(x + width, y, x + width, y + r, r);
+    ctx.lineTo(x + width, y + height - r);
+    ctx.arcTo(x + width, y + height, x + width - r, y + height, r);
+    ctx.lineTo(x + r, y + height);
+    ctx.arcTo(x, y + height, x, y + height - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
+  }
+
+  applyMask() {
+    if (!this.maskCtx || !this.maskShapes.length) return;
+    if (!this.maskCanvas.width || !this.maskCanvas.height) return;
     const ctx = this.ctx;
-    ctx.clearRect(0, 0, this.w, this.h);
-
-    if (!this.head || this.alpha <= 0.005) return;
-
     ctx.save();
-    ctx.globalAlpha = this.alpha;
-    this.drawApple(now);
-    this.drawSnake(now);
-    this.drawParticles();
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.drawImage(this.maskCanvas, 0, 0, this.w, this.h);
     ctx.restore();
   }
 
+  render(now) {
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.w, this.h);
+    this.syncMask();
+
+    if (!this.head) return;
+
+    this.drawApple(now);
+    this.drawSnake(now);
+    this.drawParticles();
+    this.applyMask();
+  }
+
   drawApple(now) {
-    if (!this.apple) return;
+    if (!this.apple || this.apple.alpha <= 0.01) return;
     const ctx = this.ctx;
     const age = clamp((now - this.apple.born) / 380, 0, 1);
     const pop = 1 + 2.4 * Math.pow(age - 1, 3) + 1.4 * Math.pow(age - 1, 2);
@@ -1131,6 +1418,7 @@ class PageSnake {
     const radius = this.cfg.appleRadius;
 
     ctx.save();
+    ctx.globalAlpha = this.apple.alpha;
     ctx.translate(this.apple.x, this.apple.y + bob);
     ctx.scale(scale, scale);
 

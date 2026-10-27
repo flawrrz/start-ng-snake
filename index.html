@@ -15,7 +15,7 @@
   <body>
     <canvas id="page-snake" aria-hidden="true"></canvas>
 
-    <header class="site-header" data-snake-avoid>
+    <header class="site-header" data-snake-avoid data-snake-mask>
       <div class="container nav">
         <a class="logo" href="#top" aria-label="start.ng — home">
           <span class="logo-mark" aria-hidden="true">
@@ -36,7 +36,7 @@
 
     <main id="top">
       <section class="hero container" aria-labelledby="hero-title">
-        <div class="hero-copy" data-snake-avoid>
+        <div class="hero-copy" data-snake-avoid data-snake-mask>
           <p class="eyebrow">Nigeria&rsquo;s home for browser games</p>
           <h1 id="hero-title">Good vibes.<br /><mark>Good games.</mark></h1>
           <p class="lead">
@@ -56,7 +56,7 @@
       </section>
 
       <section id="games" class="section container" aria-labelledby="games-title">
-        <div class="section-head" data-snake-avoid>
+        <div class="section-head" data-snake-avoid data-snake-mask>
           <div>
             <p class="kicker">Community-built</p>
             <h2 id="games-title">Games from the community</h2>
@@ -66,7 +66,7 @@
           </a>
         </div>
 
-        <div class="game-grid">
+        <div class="game-grid" data-snake-mask>
           <a
             class="game-card"
             data-snake-avoid
@@ -305,7 +305,7 @@
       </section>
 
       <section id="how" class="section container how" aria-labelledby="how-title">
-        <div class="how-head" data-snake-avoid>
+        <div class="how-head" data-snake-avoid data-snake-mask>
           <div>
             <p class="kicker">Builders welcome</p>
             <h2 id="how-title">Got a game?<br />Put it on start.ng.</h2>
@@ -315,7 +315,7 @@
             scores and friends already in hand.
           </p>
         </div>
-        <ol class="steps">
+        <ol class="steps" data-snake-mask>
           <li data-snake-avoid>
             <span class="step-num">01</span>
             <h3>Build it</h3>
@@ -337,7 +337,7 @@
             <p>It goes live at <code>yourgame.start.ng</code>, with a leaderboard if you want one.</p>
           </li>
         </ol>
-        <div class="how-actions" data-snake-avoid>
+        <div class="how-actions" data-snake-avoid data-snake-mask>
           <a class="btn" href="https://start.ng/docs" target="_blank" rel="noopener noreferrer">Read the docs</a>
           <a class="btn btn-ghost" href="https://start.ng/docs.md" target="_blank" rel="noopener noreferrer">
             Docs for your AI (.md)
@@ -347,7 +347,7 @@
 
       <section id="about" class="section container about" aria-labelledby="about-title">
         <div class="about-grid">
-          <div class="about-copy" data-snake-avoid>
+          <div class="about-copy" data-snake-avoid data-snake-mask>
             <p class="kicker">The story</p>
             <h2 id="about-title">About start.ng</h2>
             <p>
@@ -369,7 +369,7 @@
             </p>
           </div>
 
-          <div class="faq" id="faq">
+          <div class="faq" id="faq" data-snake-mask>
             <h3 data-snake-avoid>Questions</h3>
             <details data-snake-avoid>
               <summary>What is start.ng?</summary>
@@ -398,7 +398,7 @@
 
     <footer class="site-footer">
       <div class="container">
-        <div class="footer-grid">
+        <div class="footer-grid" data-snake-mask>
           <div class="footer-brand" data-snake-avoid>
             <a class="logo" href="#top" aria-label="start.ng — home">
               <span class="logo-mark" aria-hidden="true">
@@ -436,7 +436,7 @@
             </ul>
           </nav>
         </div>
-        <p class="footer-base" data-snake-avoid>
+        <p class="footer-base" data-snake-avoid data-snake-mask>
           <span>© 2026 start.ng</span>
           <span>Games from Nigeria and across Africa.</span>
         </p>
