@@ -136,6 +136,7 @@ class PageSnake {
     this.head = null;
     this.trail = [];
     this.path = [];
+    this.pathKind = null;
     this.angle = 0;
     this.visualAngle = 0;
     this.phase = 0;
@@ -147,6 +148,10 @@ class PageSnake {
     this.nextResurfaceAt = 0;
     this.lastWanderAngle = null;
     this.wanderAvoid = null;
+    this.command = null;
+    this.commandArriveAt = 0;
+    this.nextGuideAt = -Infinity;
+    this.commandHold = 6500;
     this.maskCanvas = document.createElement("canvas");
     this.maskCtx = this.maskCanvas.getContext("2d");
     this.maskShapes = [];
@@ -294,11 +299,80 @@ class PageSnake {
       this.head.x = x;
       this.head.y = y;
       this.path = [];
+      this.pathKind = null;
     }
 
     if (this.path.length && !this.pathIsClear()) {
       this.path = [];
-      if (this.appleReachable()) this.planToApple(now);
+      this.pathKind = null;
+      if (this.commandActive(now)) this.guideTo(this.command.x, this.command.y, now);
+      else if (this.appleTargetable()) this.planToApple(now);
+    }
+  }
+
+  /* A click (or drag) destination. Auto behaviour resumes after commandHold. */
+  guideTo(x, y, now = performance.now(), immediate = true) {
+    if (!this.head || !this.grid) return false;
+    if (x < 0 || y < 0 || x >= this.w || y >= this.h) return false;
+    if (!immediate && now < this.nextGuideAt) return false;
+    this.nextGuideAt = now + 110;
+
+    const start = this.cellAt(this.head.x, this.head.y);
+    const goal = this.cellAt(x, y);
+    if (!start || !goal) return false;
+
+    this.command = { x, y, born: now, alpha: this.command ? this.command.alpha : 0 };
+    this.commandArriveAt = now;
+
+    if (goal.c === start.c && goal.r === start.r) {
+      this.path = [];
+      this.pathKind = null;
+      return true;
+    }
+
+    const cells = this.findCellPath(start.c, start.r, goal.c, goal.r);
+    if (!cells || !cells.length) return true;
+
+    const points = cells.map((id) => {
+      const c = id % this.grid.cols;
+      const r = (id / this.grid.cols) | 0;
+      return {
+        x: (c + 0.5) * this.grid.cell,
+        y: (r + 0.5) * this.grid.cell,
+      };
+    });
+    points[points.length - 1] = { x, y };
+    const path = this.smoothPath(points);
+    if (path.length) {
+      this.path = path;
+      this.pathKind = "command";
+      /* Auto resumes commandHold after the snake would have arrived, not after
+         the click, so a far destination is not abandoned on the way. */
+      const speed = this.cfg.speed * (this.reducedMotion.matches ? 0.5 : 1);
+      const travel = (this.remainingPathLength() / Math.max(1, speed)) * 1000;
+      this.commandArriveAt = now + Math.min(travel, 15000);
+    }
+    return true;
+  }
+
+  releaseControl() {
+    this.command = null;
+    this.commandArriveAt = 0;
+    this.path = [];
+    this.pathKind = null;
+  }
+
+  commandActive(now) {
+    return Boolean(this.command) && now < this.commandArriveAt + this.commandHold;
+  }
+
+  fadeCommand(dt) {
+    if (!this.command) return;
+    if (this.commandActive(performance.now())) {
+      this.command.alpha = Math.min(1, this.command.alpha + dt * 7);
+    } else {
+      this.command.alpha -= dt * 3;
+      if (this.command.alpha <= 0.01) this.command = null;
     }
   }
 
@@ -310,20 +384,12 @@ class PageSnake {
     }
 
     this.updateParticles(dt);
+    this.fadeCommand(dt);
 
     if (this.pointIsVisible(this.head.x, this.head.y)) {
       this.coveredSince = 0;
     } else if (!this.coveredSince) {
       this.coveredSince = now;
-    }
-
-    if (this.coveredSince) {
-      const hiddenFor = now - this.coveredSince;
-      const grace = this.chasingApple() ? 4200 : 2200;
-      const limit = grace * (this.reducedMotion.matches ? 0.6 : 1);
-      if (hiddenFor > limit && now >= this.nextResurfaceAt && !this.pathReachesFreeWithin(1.1)) {
-        this.resurface(now);
-      }
     }
 
     if (this.apple) {
@@ -332,6 +398,7 @@ class PageSnake {
         const end = this.path[this.path.length - 1];
         if (end && hypot(end.x - this.apple.x, end.y - this.apple.y) < this.grid.cell * 1.5) {
           this.path = [];
+          this.pathKind = null;
         }
       }
       if (this.apple.leaving) {
@@ -349,12 +416,31 @@ class PageSnake {
       }
     }
 
+    // A fresh apple takes over a wander leg, but a crossing that already ends
+    // in open background is allowed to finish first.
+    if (
+      this.apple &&
+      this.pathKind === "wander" &&
+      !(this.coveredSince && this.pathEndsVisible()) &&
+      this.appleTargetable()
+    ) {
+      this.path = [];
+      this.pathKind = null;
+    }
+
     if (!this.path.length) {
-      if (this.appleReachable()) {
-        this.planToApple(now);
+      if (this.commandActive(now)) {
+        this.phase += dt * (this.reducedMotion.matches ? 0.5 : 1.9);
+      } else {
+        if (this.appleTargetable()) this.planToApple(now);
+        if (!this.path.length && !this.coveredSince) this.planWander(now);
       }
-      if (!this.path.length) {
-        this.planWander(now);
+    }
+
+    if (this.pathKind !== "command" && this.coveredSince && now >= this.nextResurfaceAt) {
+      const hiddenFor = now - this.coveredSince;
+      if (hiddenFor > 450 && !this.pathEndsVisible()) {
+        this.resurface(now);
       }
     }
 
@@ -380,6 +466,8 @@ class PageSnake {
     this.nextResurfaceAt = 0;
     this.lastWanderAngle = null;
     this.wanderAvoid = null;
+    this.command = null;
+    this.commandArriveAt = 0;
     this.spawnApple(now);
   }
 
@@ -405,6 +493,7 @@ class PageSnake {
         this.angle = Math.atan2(head.y - neck.y, head.x - neck.x);
         this.visualAngle = this.angle;
         this.path = [];
+        this.pathKind = null;
         this.phase = Math.random() * TAU;
         this.coveredSince = 0;
         this.lastWanderAngle = null;
@@ -575,6 +664,7 @@ class PageSnake {
 
     if (!cells.length) {
       this.path = [{ x: this.apple.x, y: this.apple.y }];
+      this.pathKind = "apple";
       return true;
     }
 
@@ -588,6 +678,7 @@ class PageSnake {
     });
     points[points.length - 1] = { x: this.apple.x, y: this.apple.y };
     this.path = this.smoothPath(points);
+    this.pathKind = this.path.length ? "apple" : null;
     return this.path.length > 0;
   }
 
@@ -614,6 +705,7 @@ class PageSnake {
       };
     });
     this.path = this.smoothPath(points);
+    this.pathKind = this.path.length ? "wander" : null;
     if (!this.path.length) return false;
 
     this.lastWanderAngle = Math.atan2(
@@ -624,7 +716,7 @@ class PageSnake {
     return true;
   }
 
-  /* Briefly target the closest open background so the head breaks cover. */
+  /* Leave cover through the nearest opening that lies ahead of the head. */
   resurface(now) {
     this.nextResurfaceAt = now + 1200;
     if (!this.grid || !this.head) return false;
@@ -633,26 +725,41 @@ class PageSnake {
 
     const { cols, rows, cell } = this.grid;
     const body = this.bodyCostMap();
+    const dirX = Math.cos(this.angle);
+    const dirY = Math.sin(this.angle);
     let target = null;
     let bestScore = Infinity;
 
-    for (let r = 1; r < rows - 1; r += 1) {
-      for (let c = 1; c < cols - 1; c += 1) {
-        if (body[r * cols + c]) continue;
-        const x = (c + 0.5) * cell;
-        const y = (r + 0.5) * cell;
-        if (!this.pointIsVisible(x, y)) continue;
-        const edge = Math.min(x, y, this.w - x, this.h - y);
-        const score =
-          hypot(x - this.head.x, y - this.head.y) +
-          (this.isOpen(c, r, 1) ? 0 : cell) +
-          Math.max(0, cell * 3 - edge) * 1.5;
-        if (score < bestScore) {
-          bestScore = score;
-          target = { c, r };
+    const scan = (minAlign) => {
+      for (let r = 1; r < rows - 1; r += 1) {
+        for (let c = 1; c < cols - 1; c += 1) {
+          if (body[r * cols + c]) continue;
+          const x = (c + 0.5) * cell;
+          const y = (r + 0.5) * cell;
+          if (!this.pointIsVisible(x, y)) continue;
+          const dx = x - this.head.x;
+          const dy = y - this.head.y;
+          const distance = hypot(dx, dy);
+          if (distance < 0.001) continue;
+          const align = (dx * dirX + dy * dirY) / distance;
+          if (align < minAlign) continue;
+          const edge = Math.min(x, y, this.w - x, this.h - y);
+          const score =
+            distance +
+            (this.isOpen(c, r, 1) ? 0 : cell) +
+            Math.max(0, cell * 3 - edge) * 1.5 +
+            Math.max(0, -align) * cell * 8;
+          if (score < bestScore) {
+            bestScore = score;
+            target = { c, r };
+          }
         }
       }
-    }
+    };
+
+    scan(0.82);
+    if (!target) scan(0.45);
+    if (!target) scan(-1);
 
     if (!target) return false;
     if (target.c === start.c && target.r === start.r) return false;
@@ -669,6 +776,7 @@ class PageSnake {
       };
     });
     this.path = this.smoothPath(points);
+    this.pathKind = this.path.length ? "resurface" : null;
     if (!this.path.length) return false;
 
     const speed = this.cfg.speed * (this.reducedMotion.matches ? 0.5 : 1);
@@ -691,12 +799,10 @@ class PageSnake {
     return total;
   }
 
-  pathReachesFreeWithin(seconds) {
+  pathEndsVisible() {
     if (!this.path.length) return false;
     const end = this.path[this.path.length - 1];
-    if (!this.pointIsVisible(end.x, end.y)) return false;
-    const speed = this.cfg.speed * (this.reducedMotion.matches ? 0.5 : 1);
-    return this.remainingPathLength() <= speed * seconds;
+    return this.pointIsVisible(end.x, end.y);
   }
 
   pickWanderTarget(freeOnly) {
@@ -894,10 +1000,13 @@ class PageSnake {
 
     if (travel <= 0.001) return;
 
+    this.angle = moveAngle;
     let difference = moveAngle - this.visualAngle;
     while (difference > Math.PI) difference -= TAU;
     while (difference < -Math.PI) difference += TAU;
-    this.visualAngle += difference * Math.min(1, dt * 12);
+    const ease = 1 - Math.exp(-dt * 7);
+    const maxTurn = dt * 6.5;
+    this.visualAngle += clamp(difference * ease, -maxTurn, maxTurn);
 
     this.phase += travel * (this.reducedMotion.matches ? 0.02 : 0.075);
     this.recordTrail();
@@ -937,7 +1046,9 @@ class PageSnake {
     this.nextAppleAt = now + 520;
     this.nextWanderAt = 0;
     this.path = [];
-    this.planWander(now);
+    this.pathKind = null;
+    if (this.commandActive(now)) this.guideTo(this.command.x, this.command.y, now);
+    else this.planWander(now);
   }
 
   burst(x, y) {
@@ -1039,16 +1150,8 @@ class PageSnake {
     return x >= 0 && y >= 0 && x < this.w && y < this.h;
   }
 
-  appleReachable() {
-    if (!this.apple || this.apple.leaving || !this.head) return false;
-    const radius = Math.min(640, Math.hypot(this.w, this.h) * 0.42);
-    return hypot(this.apple.x - this.head.x, this.apple.y - this.head.y) <= radius;
-  }
-
-  chasingApple() {
-    if (!this.apple || this.apple.leaving || !this.path.length || !this.grid) return false;
-    const end = this.path[this.path.length - 1];
-    return hypot(end.x - this.apple.x, end.y - this.apple.y) < this.grid.cell;
+  appleTargetable() {
+    return Boolean(this.apple && !this.apple.leaving && this.head);
   }
 
   heuristic(c, r, goalC, goalR) {
@@ -1162,7 +1265,59 @@ class PageSnake {
       index = farthest + 1;
     }
 
-    return result;
+    return this.curvedLead(result);
+  }
+
+  curvedLead(points) {
+    if (!points.length || !this.head || !this.grid) return points;
+    const target = points[0];
+    const dx = target.x - this.head.x;
+    const dy = target.y - this.head.y;
+    const distance = hypot(dx, dy);
+    const cell = this.grid.cell;
+    if (distance < cell * 3) return points;
+
+    const targetAngle = Math.atan2(dy, dx);
+    let delta = targetAngle - this.angle;
+    while (delta > Math.PI) delta -= TAU;
+    while (delta < -Math.PI) delta += TAU;
+    if (Math.abs(delta) < 0.35) return points;
+
+    const targetX = dx / distance;
+    const targetY = dy / distance;
+    const currentX = Math.cos(this.angle);
+    const currentY = Math.sin(this.angle);
+    const lead = Math.min(
+      distance * 0.5,
+      clamp(Math.abs(delta) * cell * 2.2, cell * 2.2, cell * 5.5),
+    );
+    const endX = this.head.x + targetX * lead;
+    const endY = this.head.y + targetY * lead;
+    const controlOneX = this.head.x + currentX * lead * 0.45;
+    const controlOneY = this.head.y + currentY * lead * 0.45;
+    const controlTwoX = endX - targetX * lead * 0.45;
+    const controlTwoY = endY - targetY * lead * 0.45;
+    const curve = [];
+    const steps = 12;
+
+    for (let step = 1; step <= steps; step += 1) {
+      const t = step / steps;
+      const inverse = 1 - t;
+      const x =
+        inverse ** 3 * this.head.x +
+        3 * inverse ** 2 * t * controlOneX +
+        3 * inverse * t ** 2 * controlTwoX +
+        t ** 3 * endX;
+      const y =
+        inverse ** 3 * this.head.y +
+        3 * inverse ** 2 * t * controlOneY +
+        3 * inverse * t ** 2 * controlTwoY +
+        t ** 3 * endY;
+      if (!this.pointIsRoamable(x, y)) return points;
+      curve.push({ x, y });
+    }
+
+    return [...curve, ...points];
   }
 
   lineClear(a, b) {
@@ -1405,6 +1560,52 @@ class PageSnake {
     this.drawSnake(now);
     this.drawParticles();
     this.applyMask();
+    /* The marker is transient UI, so it stays readable above page content. */
+    this.drawCommand(now);
+  }
+
+  drawCommand(now) {
+    const target = this.command;
+    if (!target || target.alpha <= 0.01) return;
+    const ctx = this.ctx;
+    const cell = this.grid ? this.grid.cell : 16;
+    const reduced = this.reducedMotion.matches;
+    const distance = this.head ? hypot(this.head.x - target.x, this.head.y - target.y) : 0;
+    const closing = clamp(distance / (cell * 5), 0, 1);
+    const base = cell * 0.62;
+    const pulse = reduced ? 0 : Math.sin(now / 230) * 0.09;
+
+    ctx.save();
+    ctx.globalAlpha = target.alpha;
+
+    const age = (now - target.born) / 460;
+    if (!reduced && age < 1) {
+      ctx.globalAlpha = target.alpha * (1 - age) * 0.7;
+      ctx.beginPath();
+      ctx.arc(target.x, target.y, base * (0.5 + age * 2.1), 0, TAU);
+      ctx.strokeStyle = LIME;
+      ctx.lineWidth = 3 * (1 - age) + 0.6;
+      ctx.stroke();
+      ctx.globalAlpha = target.alpha;
+    }
+
+    ctx.translate(target.x, target.y);
+    ctx.scale(0.62 + 0.38 * closing, 0.62 + 0.38 * closing);
+
+    ctx.beginPath();
+    ctx.arc(0, 0, base * (1 + pulse), 0, TAU);
+    ctx.fillStyle = "rgba(216, 253, 113, 0.5)";
+    ctx.fill();
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(0, 0, base * 0.24, 0, TAU);
+    ctx.fillStyle = INK;
+    ctx.fill();
+
+    ctx.restore();
   }
 
   drawApple(now) {

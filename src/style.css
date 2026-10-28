@@ -80,6 +80,85 @@ a {
   }
 }
 
+/* One-time tip for click-to-lead. Sits above page content, below the mobile menu. */
+.snake-hint {
+  position: fixed;
+  left: max(16px, env(safe-area-inset-left));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 8px 8px 14px;
+  border: 1.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: 3px 3px 0 rgba(41, 42, 35, 0.12);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.snake-hint.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+.snake-hint[hidden] {
+  display: none;
+}
+
+.snake-hint-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--lime);
+  box-shadow: 0 0 0 1.5px var(--ink);
+  animation: snake-hint-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes snake-hint-pulse {
+  50% {
+    transform: scale(0.72);
+    opacity: 0.75;
+  }
+}
+
+.snake-hint-close {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.snake-hint-close:hover {
+  background: var(--lime-soft);
+  color: var(--ink);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .site-header,
 main,
 .site-footer {

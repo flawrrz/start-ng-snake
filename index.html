@@ -15,6 +15,18 @@
   <body>
     <canvas id="page-snake" aria-hidden="true"></canvas>
 
+    <aside class="snake-hint" id="snake-hint">
+      <span class="snake-hint-dot" aria-hidden="true"></span>
+      <span>Click anywhere to lead the snake</span>
+      <button class="snake-hint-close" type="button" data-snake-ignore aria-label="Dismiss the snake tip">
+        <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true">
+          <path d="M2.4 2.4l7.2 7.2M9.6 2.4l-7.2 7.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+        </svg>
+      </button>
+    </aside>
+
+    <p class="visually-hidden" id="snake-live" role="status" aria-live="polite"></p>
+
     <header class="site-header" data-snake-avoid data-snake-mask>
       <div class="container nav">
         <a class="logo" href="#top" aria-label="start.ng — home">
