@@ -393,7 +393,7 @@ class PageSnake {
     }
 
     if (this.apple) {
-      if (!this.apple.leaving && !this.pointIsFree(this.apple.x, this.apple.y)) {
+      if (!this.apple.leaving && !this.appleSpotVisible(this.apple.x, this.apple.y)) {
         this.apple.leaving = true;
         const end = this.path[this.path.length - 1];
         if (end && hypot(end.x - this.apple.x, end.y - this.apple.y) < this.grid.cell * 1.5) {
@@ -881,14 +881,18 @@ class PageSnake {
     const bodyPoints = this.bodyOutlinePoints();
     const lastApple = this.lastApple;
 
-    const collect = (allowClose) => {
+    const collect = (allowClose, allowHalo) => {
       const withSpace = [];
       const withoutSpace = [];
       for (let r = 1; r < rows - 1; r += 1) {
         for (let c = 1; c < cols - 1; c += 1) {
-          if (blocked[r * cols + c]) continue;
+          const crowded = Boolean(blocked[r * cols + c]);
+          if (crowded && !allowHalo) continue;
           const x = (c + 0.5) * cell;
           const y = (r + 0.5) * cell;
+          /* Narrow viewports can leave inflated obstacles over every cell, so
+             the clearance halo is a last resort. Never under page content. */
+          if (crowded && !this.pointIsVisible(x, y)) continue;
           if (x < margin || x > this.w - margin) continue;
           if (y < margin || y > this.h - margin) continue;
 
@@ -919,8 +923,10 @@ class PageSnake {
       return withSpace.length ? withSpace : withoutSpace;
     };
 
-    let candidates = collect(false);
-    if (!candidates.length) candidates = collect(true);
+    let candidates = collect(false, false);
+    if (!candidates.length) candidates = collect(true, false);
+    if (!candidates.length) candidates = collect(false, true);
+    if (!candidates.length) candidates = collect(true, true);
     if (!candidates.length) return false;
 
     candidates.sort((a, b) => a.score - b.score);
@@ -1132,6 +1138,12 @@ class PageSnake {
   pointIsFree(x, y) {
     const cell = this.cellAt(x, y);
     return !!cell && this.isFreeCell(cell.c, cell.r);
+  }
+
+  /* Apples may legally sit in the obstacle halo, so only real coverage retires
+     one. */
+  appleSpotVisible(x, y) {
+    return this.pointIsFree(x, y) || this.pointIsVisible(x, y);
   }
 
   pointIsVisible(x, y) {
