@@ -74,13 +74,16 @@ if (canvas) {
     const hushLabel = hush ? hush.querySelector("[data-snake-hush-label]") : null;
     const HUSH_KEY = "startng.snake.hushed";
 
+    const compact = window.matchMedia("(max-width: 640px)");
+
     const paintHush = (on) => {
       if (!hush) return;
-      const label = on ? "Wake the snake" : "Hush the snake";
+      const name = on ? "Wake the snake" : "Hush the snake";
       hush.setAttribute("aria-pressed", on ? "true" : "false");
-      hush.setAttribute("aria-label", label);
-      if (hushLabel) hushLabel.textContent = label;
+      hush.setAttribute("aria-label", name);
+      if (hushLabel) hushLabel.textContent = compact.matches ? name.split(" ")[0] : name;
     };
+    compact.addEventListener("change", () => paintHush(hushed));
 
     let hushed = false;
     try {

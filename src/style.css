@@ -180,10 +180,6 @@ a {
   box-shadow: 2px 2px 0 rgba(41, 42, 35, 0.12);
 }
 
-.snake-hush svg {
-  flex-shrink: 0;
-}
-
 .snake-hush[aria-pressed="true"] {
   background: var(--ink);
   color: var(--bg);
@@ -870,18 +866,10 @@ h2 {
     bottom: calc(max(16px, env(safe-area-inset-bottom)) + 48px);
   }
 
-  /* A full-width pill would cover the page, so the switch shrinks to its icon. */
+  /* Keep the switch narrow so it does not cover the page copy. */
   .snake-hush {
-    padding: 14px;
-  }
-
-  .snake-hush span {
-    display: none;
-  }
-
-  .snake-hush svg {
-    width: 15px;
-    height: 15px;
+    padding: 11px 12px;
+    font-size: 10px;
   }
 
   .nav {
