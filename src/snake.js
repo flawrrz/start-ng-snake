@@ -1,6 +1,12 @@
 const INK = "#292a23";
 const LIME = "#d8fd71";
 const CREAM = "#f6f5ee";
+/* The snake is drawn in garden tones: a near-black contour and fat bands read as
+   a warning pattern, which is the opposite of a resident pet. */
+const MOSS = "#3d4a2a";
+const SAGE = "#bde05a";
+const CARD = "#fffefa";
+const GROWTH_CAP = 1.9;
 const TAU = Math.PI * 2;
 
 const SIZES = [
@@ -167,6 +173,11 @@ class PageSnake {
     this.lastFrame = 0;
     this.raf = 0;
     this.tongueSeed = Math.random() * 6;
+    this.blink = 0;
+    this.blinkAt = 0;
+    this.blinkPhase = 0;
+    this.hushed = false;
+    this.presence = 1;
     this.reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     this.boundTick = (time) => this.tick(time);
     this.boundScroll = () => {
@@ -205,8 +216,19 @@ class PageSnake {
       this.measure();
       this.rebuildGrid(performance.now());
       this.lastFrame = performance.now();
+      this.blinkAt = performance.now() + 1400 + Math.random() * 1600;
       this.raf = requestAnimationFrame(this.boundTick);
     });
+  }
+
+  /* Hushing is a visitor choice, so the snake fully stops rather than hiding. */
+  setHushed(on) {
+    this.hushed = Boolean(on);
+    if (!this.hushed) {
+      if (!this.raf) this.start();
+      return;
+    }
+    if (!this.raf) this.presence = 0;
   }
 
   tick(now) {
@@ -218,6 +240,23 @@ class PageSnake {
 
     if (this.layoutDirty && now - this.lastGridAt > 80) {
       this.rebuildGrid(now);
+    }
+
+    const target = this.hushed ? 0 : 1;
+    if (this.presence !== target) {
+      const rate = this.hushed ? 1.9 : 1.2;
+      this.presence = clamp(this.presence + Math.sign(target - this.presence) * dt * rate, 0, 1);
+    }
+
+    if (this.hushed) {
+      if (this.presence <= 0.001) {
+        cancelAnimationFrame(this.raf);
+        this.raf = 0;
+        this.ctx.clearRect(0, 0, this.w, this.h);
+        return;
+      }
+      this.render(now);
+      return;
     }
 
     this.update(dt, now);
@@ -312,6 +351,7 @@ class PageSnake {
 
   /* A click (or drag) destination. Auto behaviour resumes after commandHold. */
   guideTo(x, y, now = performance.now(), immediate = true) {
+    if (this.hushed) return false;
     if (!this.head || !this.grid) return false;
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return false;
     if (!immediate && now < this.nextGuideAt) return false;
@@ -376,6 +416,21 @@ class PageSnake {
     }
   }
 
+  updateBlink(dt, now) {
+    if (this.blinkPhase > 0) {
+      this.blinkPhase += dt / 0.19;
+      if (this.blinkPhase >= 1) {
+        this.blinkPhase = 0;
+        this.blink = 0;
+        this.blinkAt = now + 2400 + Math.random() * 3200;
+      } else {
+        this.blink = Math.sin(this.blinkPhase * Math.PI);
+      }
+      return;
+    }
+    if (now >= this.blinkAt) this.blinkPhase = 0.001;
+  }
+
   update(dt, now) {
     if (!this.head) {
       if (now >= this.nextInitAt) this.initWorld(now);
@@ -383,6 +438,7 @@ class PageSnake {
       return;
     }
 
+    this.updateBlink(dt, now);
     this.updateParticles(dt);
     this.fadeCommand(dt);
 
@@ -448,6 +504,15 @@ class PageSnake {
       this.move(dt);
       this.trimTrail();
       this.checkEat(now);
+    }
+
+    /* The marker has done its job once the head is on it, so release the hold
+       instead of leaving a stranded ring for commandHold. */
+    if (this.command && this.commandActive(now) && !this.path.length) {
+      const reached = hypot(this.head.x - this.command.x, this.head.y - this.command.y);
+      if (reached < this.grid.cell * 1.2 && now > this.command.born + 250) {
+        this.commandArriveAt = 0;
+      }
     }
   }
 
@@ -1046,7 +1111,12 @@ class PageSnake {
     if (hypot(this.head.x - this.apple.x, this.head.y - this.apple.y) > reach) return;
 
     this.burst(this.apple.x, this.apple.y);
-    this.bodyLength += this.cfg.growth;
+    /* An unruly 3x body reads as a threat; a house snake settles near its
+       starting size. */
+    this.bodyLength = Math.min(
+      this.bodyLength + this.cfg.growth,
+      this.cfg.initialLength * GROWTH_CAP,
+    );
     this.wanderAvoid = { x: this.apple.x, y: this.apple.y };
     this.apple = null;
     this.nextAppleAt = now + 520;
@@ -1410,7 +1480,9 @@ class PageSnake {
         : Math.sin(point.s * frequency - this.phase) * cfg.wave * envelope;
       point.x += -ty * wave;
       point.y += tx * wave;
-      point.width = cfg.bodyWidth * (0.22 + 0.78 * Math.pow(1 - t, 0.42));
+      /* A whippy rat-tail reads as reptilian; keeping the body plump makes the
+         snake look more like a pet than a predator. */
+      point.width = cfg.bodyWidth * (0.45 + 0.55 * Math.pow(1 - t, 0.55));
     }
 
     return points;
@@ -1574,6 +1646,14 @@ class PageSnake {
     this.applyMask();
     /* The marker is transient UI, so it stays readable above page content. */
     this.drawCommand(now);
+
+    if (this.presence < 1) {
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.globalAlpha = 1 - this.presence;
+      ctx.fillRect(0, 0, this.w, this.h);
+      ctx.restore();
+    }
   }
 
   drawCommand(now) {
@@ -1697,7 +1777,7 @@ class PageSnake {
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
         ctx.lineWidth = width + outline * 2;
-        ctx.strokeStyle = INK;
+        ctx.strokeStyle = MOSS;
         ctx.stroke();
       }
 
@@ -1713,26 +1793,33 @@ class PageSnake {
         ctx.stroke();
       }
 
-      const stripeOffset = cfg.bodyWidth * 1.4;
-      const stripeGap = cfg.bodyWidth * 2.3;
-      const stripeWidth = cfg.bodyWidth * 0.55;
-      ctx.lineCap = "round";
-
-      for (let i = 0; i < samples.length - 1; i += 1) {
-        const a = samples[i];
-        const b = samples[i + 1];
-        const middle = (a.s + b.s) / 2;
-        if (middle <= stripeOffset) continue;
-        if ((middle - stripeOffset) % stripeGap > stripeWidth) continue;
-
-        const width = (a.width + b.width) / 2;
+      /* Each band is one polyline so the butt caps stay crisp on curves. */
+      const bandStart = cfg.bodyWidth * 1.7;
+      const bandGap = cfg.bodyWidth * 3.2;
+      const bandLength = cfg.bodyWidth * 0.42;
+      const strokeBand = (points) => {
+        if (points.length < 2) return;
         ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.lineWidth = width;
-        ctx.strokeStyle = INK;
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
+        ctx.lineWidth = (points[0].width + points[points.length - 1].width) * 0.34;
+        ctx.strokeStyle = SAGE;
         ctx.stroke();
+      };
+
+      ctx.lineCap = "butt";
+      let band = [];
+      for (const point of samples) {
+        const inBand =
+          point.s > bandStart && (point.s - bandStart) % bandGap <= bandLength;
+        if (inBand) band.push(point);
+        else {
+          strokeBand(band);
+          band = [];
+        }
       }
+      strokeBand(band);
+      ctx.lineCap = "round";
     }
 
     this.drawHead();
@@ -1741,57 +1828,80 @@ class PageSnake {
   drawHead() {
     const ctx = this.ctx;
     const cfg = this.cfg;
-    const radius = cfg.bodyWidth * 0.78;
-    const outline = Math.max(1.5, cfg.bodyWidth * 0.15);
+    const radius = cfg.bodyWidth * 0.82;
+    const outline = Math.max(1.5, cfg.bodyWidth * 0.13);
+    const line = Math.max(1.2, cfg.bodyWidth * 0.1);
 
     ctx.save();
     ctx.translate(this.head.x, this.head.y);
     ctx.rotate(this.visualAngle);
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
 
     ctx.beginPath();
-    ctx.ellipse(radius * 0.18, 0, radius * 1.04, radius * 0.87, 0, 0, TAU);
+    ctx.ellipse(radius * 0.14, 0, radius * 1.0, radius * 0.94, 0, 0, TAU);
     ctx.fillStyle = LIME;
     ctx.fill();
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = outline * 1.35;
-    ctx.lineJoin = "round";
+    ctx.strokeStyle = MOSS;
+    ctx.lineWidth = outline * 1.2;
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.ellipse(-radius * 0.22, -radius * 0.34, radius * 0.42, radius * 0.16, -0.35, 0, TAU);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.38)";
+    ctx.ellipse(-radius * 0.24, -radius * 0.38, radius * 0.4, radius * 0.15, -0.35, 0, TAU);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.42)";
     ctx.fill();
 
-    for (const side of [-1, 1]) {
-      const ex = radius * 0.36;
-      const ey = side * radius * 0.47;
-      ctx.beginPath();
-      ctx.arc(ex, ey, radius * 0.23, 0, TAU);
-      ctx.fillStyle = INK;
-      ctx.fill();
+    /* A smile, drawn before the eyes so a blink sits on top of it. */
+    ctx.beginPath();
+    ctx.arc(radius * 0.56, radius * 0.04, radius * 0.36, Math.PI * 0.15, Math.PI * 0.62);
+    ctx.strokeStyle = MOSS;
+    ctx.lineWidth = line * 1.35;
+    ctx.stroke();
 
-      ctx.beginPath();
-      ctx.arc(ex + radius * 0.06, ey - radius * 0.06, radius * 0.07, 0, TAU);
-      ctx.fillStyle = CREAM;
-      ctx.fill();
+    const open = 1 - this.blink;
+    for (const side of [-1, 1]) {
+      const ex = radius * 0.42;
+      const ey = side * radius * 0.33;
+      const eyeR = radius * 0.3;
+
+      if (open > 0.3) {
+        ctx.beginPath();
+        ctx.ellipse(ex, ey, eyeR, eyeR * Math.max(0.16, open), 0, 0, TAU);
+        ctx.fillStyle = CARD;
+        ctx.fill();
+        ctx.strokeStyle = MOSS;
+        ctx.lineWidth = line * 0.75;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(ex + eyeR * 0.18, ey, eyeR * 0.5, 0, TAU);
+        ctx.fillStyle = INK;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(ex + eyeR * 0.34, ey - eyeR * 0.26, eyeR * 0.17, 0, TAU);
+        ctx.fillStyle = CREAM;
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.arc(ex, ey, eyeR * 0.86, Math.PI * 0.18, Math.PI * 0.82);
+        ctx.strokeStyle = MOSS;
+        ctx.lineWidth = line;
+        ctx.stroke();
+      }
     }
 
     if (!this.reducedMotion.matches) {
-      const cycle = ((performance.now() / 1000 + this.tongueSeed) % 5.2);
-      if (cycle < 0.7) {
-        const extension = Math.sin((cycle / 0.7) * Math.PI);
-        const startX = radius * 1.12;
-        const length = radius * 0.8 + extension * radius * 0.95;
+      const cycle = (performance.now() / 1000 + this.tongueSeed) % 8.4;
+      if (cycle < 0.5) {
+        const extension = Math.sin((cycle / 0.5) * Math.PI);
+        const startX = radius * 1.06;
+        const length = radius * 0.26 + extension * radius * 0.62;
         ctx.beginPath();
-        ctx.moveTo(startX, 0);
-        ctx.lineTo(startX + length, 0);
-        ctx.lineTo(startX + length + radius * 0.28, -radius * 0.24);
-        ctx.moveTo(startX + length, 0);
-        ctx.lineTo(startX + length + radius * 0.28, radius * 0.24);
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = Math.max(1.1, cfg.bodyWidth * 0.11);
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
+        ctx.moveTo(startX, radius * 0.12);
+        ctx.lineTo(startX + length, radius * 0.12);
+        ctx.strokeStyle = MOSS;
+        ctx.lineWidth = line * 1.15;
         ctx.stroke();
       }
     }

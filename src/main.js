@@ -70,10 +70,54 @@ if (canvas) {
       announce("The snake is roaming on its own again.");
     });
 
-    setTimeout(hideHint, 14000);
-    setTimeout(() => {
-      if (hint && !hint.hidden) hint.classList.add("is-visible");
-    }, 1200);
+    const hush = document.getElementById("snake-hush");
+    const hushLabel = hush ? hush.querySelector("[data-snake-hush-label]") : null;
+    const HUSH_KEY = "startng.snake.hushed";
+
+    const paintHush = (on) => {
+      if (!hush) return;
+      const label = on ? "Wake the snake" : "Hush the snake";
+      hush.setAttribute("aria-pressed", on ? "true" : "false");
+      hush.setAttribute("aria-label", label);
+      if (hushLabel) hushLabel.textContent = label;
+    };
+
+    let hushed = false;
+    try {
+      hushed = localStorage.getItem(HUSH_KEY) === "1";
+    } catch {
+      hushed = false;
+    }
+    snake.setHushed(hushed);
+    paintHush(hushed);
+
+    if (hush) {
+      hush.addEventListener("click", () => {
+        hushed = !hushed;
+        try {
+          localStorage.setItem(HUSH_KEY, hushed ? "1" : "0");
+        } catch {
+          /* Private mode: the choice still applies for this visit. */
+        }
+        snake.setHushed(hushed);
+        paintHush(hushed);
+        if (hushed) {
+          hideHint();
+          announce("The snake is hushed and stays off the page until you wake it.");
+        } else {
+          announce("The snake is back on the page.");
+        }
+      });
+    }
+
+    if (!hushed) {
+      setTimeout(hideHint, 14000);
+      setTimeout(() => {
+        if (hint && !hint.hidden) hint.classList.add("is-visible");
+      }, 1200);
+    } else {
+      hideHint();
+    }
 
     const close = hint ? hint.querySelector("[data-snake-ignore]") : null;
     if (close) close.addEventListener("click", hideHint);
